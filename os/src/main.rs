@@ -15,12 +15,14 @@
 
 use core::arch::global_asm;
 use log::*;
+use timer::sleep_us;
 
 #[macro_use]
 mod console;
 mod lang_items;
 mod logging;
 mod sbi;
+mod timer;
 
 #[path = "boards/qemu.rs"]
 mod board;
@@ -72,6 +74,9 @@ pub fn rust_main() -> ! {
         boot_stack_top as usize, boot_stack_lower_bound as usize
     );
     error!("[kernel] .bss [{:#x}, {:#x})", sbss as usize, ebss as usize);
+
+    sleep_us(5000000);
+    println!("Weakup! 5s is too looooong!");
 
     use crate::board::QEMUExit;
     crate::board::QEMU_EXIT_HANDLE.exit_success(); // CI autotest success
