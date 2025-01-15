@@ -1,14 +1,16 @@
 //! Process management syscalls
+
+use core::mem::size_of;
+
 use alloc::sync::Arc;
 
 use crate::{
     config::MAX_SYSCALL_NUM,
     loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str},
+    mm::{is_mem_sufficient, translated_byte_buffer, translated_refmut, translated_str, VirtAddr},
     task::{
-        add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, TaskStatus,
-    },
+        add_task, current_task, current_user_token, exit_current_and_run_next, suspend_current_and_run_next, TaskStatus
+    }, timer::get_time_us,
 };
 
 #[repr(C)]
@@ -119,10 +121,24 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_get_time",
         current_task().unwrap().pid.0
     );
-    -1
+    let _us = get_time_us();
+    let time_val = TimeVal {
+        sec: _us / 1_000_000,
+        usec: _us % 1_000_000,
+    };
+    let buffers = translated_byte_buffer(
+        current_user_token(), _ts as *const u8, size_of::<TimeVal>());
+    let mut time_val_ptr = &time_val as *const _ as *const u8;
+    for buffer in buffers {
+        unsafe {
+            time_val_ptr.copy_to(buffer.as_mut_ptr(), buffer.len());
+            time_val_ptr = time_val_ptr.add(buffer.len());
+        }
+    }
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
@@ -139,19 +155,37 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
 /// YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_mmap",
         current_task().unwrap().pid.0
     );
-    -1
+    let start_va = VirtAddr::from(_start);
+    // 1. illegal start virtual address or port
+    if !start_va.aligned() || _port & !0x7 != 0 || _port & 0x7 == 0 {
+        return -1;
+    }
+
+    // 2. Check is there sufficient physical memory
+    if !is_mem_sufficient(_len) {
+        return -1;
+    }
+    
+    let end_va = VirtAddr::from(_start + _len);
+    current_task().unwrap().mmap(start_va, end_va, _port)
 }
 
 /// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_munmap",
         current_task().unwrap().pid.0
     );
-    -1
+    let start_va = VirtAddr::from(_start);
+    if !start_va.aligned() {
+        return -1;
+    }
+    
+    let end_va = VirtAddr::from(_start + _len);
+    current_task().unwrap().munmap(start_va, end_va)
 }
 
 /// change data segment size
@@ -168,17 +202,33 @@ pub fn sys_sbrk(size: i32) -> isize {
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(_path: *const u8) -> isize {
     trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_spawn",
         current_task().unwrap().pid.0
     );
-    -1
+    // spawn a new process based upon _path
+    let token = current_user_token();
+    let _path = translated_str(token, _path);
+    let data_opt = get_app_data_by_name(_path.as_str());
+    if data_opt.is_none() {  // invalid file name
+        return -1;
+    }
+    let current_task = current_task().unwrap();
+    let new_task = current_task.spawn(data_opt.unwrap());
+    let new_pid = new_task.getpid();
+    add_task(new_task);
+    new_pid as isize
 }
 
 // YOUR JOB: Set task priority.
 pub fn sys_set_priority(_prio: isize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_set_priority",
         current_task().unwrap().pid.0
     );
-    -1
+    if _prio <= 1 {
+        return -1;
+    }
+    let current_task = current_task().unwrap();
+    current_task.set_prio(_prio);
+    _prio
 }
